@@ -9,7 +9,8 @@ import (
 var ErrNotImplemented = errors.New("not implemented")
 
 type service struct {
-	sources *SourceManager
+	sources  *SourceManager
+	resolver Resolver
 }
 
 func New(dataDir string) (Backend, error) {
@@ -18,7 +19,9 @@ func New(dataDir string) (Backend, error) {
 		return nil, err
 	}
 
-	return &service{sources: sources}, nil
+	resolver := newRoutingResolver(sources, sources)
+
+	return &service{sources: sources, resolver: resolver}, nil
 }
 
 func (s *service) Init() error {
@@ -34,7 +37,11 @@ func (s *service) UpdateSource(name string) error {
 }
 
 func (s *service) Resolve(args []string) (*Resolution, error) {
-	return nil, notImplemented("Resolve")
+	if s.resolver == nil {
+		return nil, notImplemented("Resolve")
+	}
+
+	return s.resolver.Resolve(args)
 }
 
 func (s *service) GetEntry(res *Resolution) (*parsers.Entry, error) {
