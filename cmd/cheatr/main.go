@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cheatr/internal/backend"
 	"fmt"
 	"os"
 	"strings"
@@ -26,12 +27,32 @@ func runInteractiveMode() {
 }
 
 func runUpdateCommand(args []string) {
+	b, err := backend.New("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize backend: %v\n", err)
+		os.Exit(1)
+	}
+
 	if len(args) == 0 {
-		fmt.Println("update command: refresh all sources (placeholder)")
+		if err := b.Update(); err != nil {
+			fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("updated all sources")
 		return
 	}
 
-	fmt.Printf("update command: refresh sources [%s] (placeholder)\n", strings.Join(args, ", "))
+	if len(args) > 1 {
+		fmt.Fprintln(os.Stderr, "usage: cheatr update [source]")
+		os.Exit(2)
+	}
+
+	if err := b.UpdateSource(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "update failed for %q: %v\n", args[0], err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("updated source %q\n", args[0])
 }
 
 func runDocsCommand(args []string) {
