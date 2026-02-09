@@ -20,6 +20,7 @@ type routingResolver struct {
 	sources   *SourceManager
 	languages LanguageDetector
 	loadCtx   context.Context
+	llmAction func() (model string, provider string, ok bool)
 }
 
 func newRoutingResolver(sources *SourceManager, detector LanguageDetector) Resolver {
@@ -27,6 +28,7 @@ func newRoutingResolver(sources *SourceManager, detector LanguageDetector) Resol
 		sources:   sources,
 		languages: detector,
 		loadCtx:   context.Background(),
+		llmAction: configuredLLMAction,
 	}
 }
 
@@ -202,6 +204,10 @@ func (r *routingResolver) Search(query string, filter SourceFilter) ([]SearchRes
 		results = append(results, action)
 	}
 
+	if strings.TrimSpace(searchQuery) != "" && !containsEntryResults(results) {
+		results = append(results, r.noResultActions(searchQuery, filter)...)
+	}
+
 	sort.SliceStable(results, func(i, j int) bool {
 		leftScore := results[i].Score + sourceRoutingBoost(results[i].Priority)
 		rightScore := results[j].Score + sourceRoutingBoost(results[j].Priority)
@@ -229,6 +235,69 @@ func (r *routingResolver) Search(query string, filter SourceFilter) ([]SearchRes
 	})
 
 	return results, nil
+}
+
+func containsEntryResults(results []SearchResult) bool {
+	for _, result := range results {
+		if result.Kind == SearchEntry && result.Entry != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (r *routingResolver) noResultActions(query string, filter SourceFilter) []SearchResult {
+	actions := make([]SearchResult, 0, 2)
+
+	if filter == FilterNone || filter == FilterDevDocs {
+		actions = append(actions, SearchResult{
+			Kind:   SearchAction,
+			Label:  fmt.Sprintf("Search %q in DevDocs", query),
+			Source: SourceDevDocs,
+			Action: ActionBrowseDevDocs,
+			Meta: map[string]string{
+				"query": query,
+			},
+		})
+	}
+
+	if filter != FilterNone {
+		return actions
+	}
+
+	if r.llmAction == nil {
+		return actions
+	}
+
+	model, provider, ok := r.llmAction()
+	if !ok {
+		return actions
+	}
+
+	actions = append(actions, SearchResult{
+		Kind:   SearchAction,
+		Label:  fmt.Sprintf("Ask %s (%s)", model, provider),
+		Source: SourceLLM,
+		Action: ActionAskLLM,
+		Meta: map[string]string{
+			"query":    query,
+			"model":    model,
+			"provider": provider,
+		},
+	})
+
+	return actions
+}
+
+func configuredLLMAction() (model string, provider string, ok bool) {
+	model = strings.TrimSpace(os.Getenv("CHEATR_LLM_MODEL"))
+	provider = strings.TrimSpace(os.Getenv("CHEATR_LLM_PROVIDER"))
+	if model == "" || provider == "" {
+		return "", "", false
+	}
+
+	return model, provider, true
 }
 
 func (r *routingResolver) localDevDocsBrowseAction(query string, filter SourceFilter) (SearchResult, bool, error) {
