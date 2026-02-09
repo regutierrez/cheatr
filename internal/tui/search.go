@@ -43,6 +43,14 @@ func (m *searchModel) cycleSourceTabForward() {
 	m.filter = sourceTabs[m.activeTab].filter
 }
 
+func (m *searchModel) cycleSourceTabBackward() {
+	m.activeTab--
+	if m.activeTab < 0 {
+		m.activeTab = len(sourceTabs) - 1
+	}
+	m.filter = sourceTabs[m.activeTab].filter
+}
+
 func (m searchModel) renderSourceTabs() string {
 	labels := make([]string, 0, len(sourceTabs))
 	for i, tab := range sourceTabs {

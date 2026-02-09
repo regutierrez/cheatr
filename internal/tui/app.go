@@ -6,13 +6,25 @@ import (
 
 	"cheatr/internal/backend"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
+)
+
+type interactiveFocusMode string
+
+const (
+	focusSearch interactiveFocusMode = "SEARCH"
+	focusList   interactiveFocusMode = "LIST"
+	focusViewer interactiveFocusMode = "VIEWER"
 )
 
 type interactiveModel struct {
 	backend     backend.Backend
 	input       textinput.Model
 	search      searchModel
+	focus       interactiveFocusMode
 	results     []backend.SearchResult
 	err         error
 	selected    int
@@ -22,7 +34,11 @@ type interactiveModel struct {
 	lastQuery   string
 	lastFilter  backend.SourceFilter
 	styles      appStyles
-	openRequest *viewerOpenRequest
+	vp          viewport.Model
+	viewerQuery string
+	viewerSrc   string
+	viewerRaw   string
+	viewerErr   error
 }
 
 type searchResultsMsg struct {
@@ -39,23 +55,12 @@ type openSelectionMsg struct {
 	err      error
 }
 
-type viewerOpenRequest struct {
-	query    string
-	source   string
-	markdown string
-}
-
 func RunInteractive(b backend.Backend) error {
 	model := newInteractiveModel(b)
-	finalModel, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
 	}
-
-	if open := extractViewerOpenRequest(finalModel); open != nil {
-		return RunPager(open.query, open.source, open.markdown)
-	}
-
 	return nil
 }
 
@@ -66,14 +71,18 @@ func newInteractiveModel(b backend.Backend) interactiveModel {
 	input.Focus()
 	input.CharLimit = 256
 	input.Width = 48
+	vp := viewport.New(0, 0)
+	vp.KeyMap = viewport.KeyMap{}
 
 	search := newSearchModel()
 	return interactiveModel{
 		backend:    b,
 		input:      input,
 		search:     search,
+		focus:      focusSearch,
 		lastFilter: search.filter,
 		styles:     newAppStyles(),
+		vp:         vp,
 	}
 }
 
@@ -87,6 +96,10 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = typed.Width
 		m.height = typed.Height
 		m.input.Width = maxInt(10, typed.Width-12)
+		if m.focus == focusViewer {
+			m.layoutViewer()
+			m.renderViewerMarkdown()
+		}
 		return m, nil
 	case searchResultsMsg:
 		if typed.query != m.lastQuery || typed.filter != m.lastFilter {
@@ -106,20 +119,48 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "esc", "q":
 			return m, tea.Quit
 		case "enter":
+			if m.focus == focusViewer {
+				return m, nil
+			}
 			if len(m.results) == 0 || m.selected < 0 || m.selected >= len(m.results) {
 				return m, nil
 			}
+			if m.focus == focusSearch {
+				m.setFocus(focusList)
+			}
 			return m, m.executeSelectionCmd(m.results[m.selected])
 		case "tab":
+			if m.focus != focusList {
+				return m, nil
+			}
 			m.search.cycleSourceTabForward()
 			m.lastFilter = m.search.filter
 			return m, m.searchCmd()
+		case "backspace":
+			if m.focus == focusViewer {
+				m.setFocus(focusList)
+				return m, nil
+			}
+			if m.focus == focusList {
+				m.search.cycleSourceTabBackward()
+				m.lastFilter = m.search.filter
+				m.selected = 0
+				return m, m.searchCmd()
+			}
 		case "up", "k":
+			if m.focus == focusViewer {
+				return m, nil
+			}
+			m.setFocus(focusList)
 			if m.selected > 0 {
 				m.selected--
 			}
 			return m, nil
 		case "down", "j":
+			if m.focus == focusViewer {
+				return m, nil
+			}
+			m.setFocus(focusList)
 			if m.selected < len(m.results)-1 {
 				m.selected++
 			}
@@ -130,13 +171,13 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = typed.err
 			return m, nil
 		}
+		m.openViewer(typed.query, typed.source, typed.markdown)
+		m.setFocus(focusViewer)
+		return m, nil
+	}
 
-		m.openRequest = &viewerOpenRequest{
-			query:    typed.query,
-			source:   typed.source,
-			markdown: typed.markdown,
-		}
-		return m, tea.Quit
+	if m.focus == focusViewer {
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -165,7 +206,12 @@ func (m interactiveModel) searchCmd() tea.Cmd {
 }
 
 func (m interactiveModel) View() string {
+	if m.focus == focusViewer {
+		return m.renderViewerView()
+	}
+
 	parts := []string{
+		m.styles.modeBar.Render(fmt.Sprintf("cheatr [%s]", m.focus)),
 		m.styles.input.Render(m.input.View()),
 		m.styles.tabs.Render(m.search.renderSourceTabs()),
 	}
@@ -196,21 +242,99 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func extractViewerOpenRequest(model tea.Model) *viewerOpenRequest {
-	switch typed := model.(type) {
-	case interactiveModel:
-		return typed.openRequest
-	case *interactiveModel:
-		return typed.openRequest
-	default:
-		return nil
-	}
-}
-
 func (m interactiveModel) executeSelectionCmd(selected backend.SearchResult) tea.Cmd {
 	return func() tea.Msg {
 		return m.executeSelection(selected)
 	}
+}
+
+func (m *interactiveModel) setFocus(focus interactiveFocusMode) {
+	m.focus = focus
+	if focus == focusSearch {
+		m.input.Focus()
+		return
+	}
+	m.input.Blur()
+}
+
+func (m *interactiveModel) openViewer(query, source, markdown string) {
+	m.viewerQuery = strings.TrimSpace(query)
+	m.viewerSrc = strings.TrimSpace(source)
+	m.viewerRaw = strings.TrimSpace(markdown)
+	m.layoutViewer()
+	m.renderViewerMarkdown()
+	m.vp.GotoTop()
+}
+
+func (m *interactiveModel) layoutViewer() {
+	if m.width < 1 || m.height < 1 {
+		return
+	}
+
+	headerHeight := lipgloss.Height(m.styles.modeBar.Render("x"))
+	headerHeight += lipgloss.Height(m.styles.viewerHeader.Render("x"))
+	contentHeight := m.height - headerHeight
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	contentWidth := m.width - m.styles.viewerBody.GetHorizontalPadding()
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	m.vp.Width = contentWidth
+	m.vp.Height = contentHeight
+}
+
+func (m *interactiveModel) renderViewerMarkdown() {
+	if m.vp.Width < 1 {
+		return
+	}
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(m.vp.Width),
+	)
+	if err != nil {
+		m.viewerErr = err
+		m.vp.SetContent(m.viewerRaw)
+		return
+	}
+
+	rendered, err := renderer.Render(m.viewerRaw)
+	if err != nil {
+		m.viewerErr = err
+		m.vp.SetContent(m.viewerRaw)
+		return
+	}
+
+	m.viewerErr = nil
+	m.vp.SetContent(rendered)
+}
+
+func (m interactiveModel) renderViewerView() string {
+	headerQuery := m.viewerQuery
+	if headerQuery == "" {
+		headerQuery = "cheatr"
+	}
+	headerSource := strings.TrimSpace(m.viewerSrc)
+	if headerSource == "" {
+		headerSource = "unknown"
+	}
+
+	parts := []string{
+		m.styles.modeBar.Render(fmt.Sprintf("cheatr [%s]", m.focus)),
+		m.styles.viewerHeader.Render(fmt.Sprintf("%s %s", headerQuery, m.styles.badge.Render(strings.ToUpper(headerSource)))),
+	}
+
+	if m.viewerErr != nil {
+		parts = append(parts, m.styles.error.Render(fmt.Sprintf("render error: %v", m.viewerErr)))
+	} else {
+		parts = append(parts, m.styles.viewerBody.Render(m.vp.View()))
+	}
+
+	return strings.Join(parts, "\n")
 }
 
 func (m interactiveModel) executeSelection(selected backend.SearchResult) openSelectionMsg {

@@ -3,15 +3,18 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 type appStyles struct {
-	input      lipgloss.Style
-	tabs       lipgloss.Style
-	group      lipgloss.Style
-	row        lipgloss.Style
-	selected   lipgloss.Style
-	badge      lipgloss.Style
-	dim        lipgloss.Style
-	error      lipgloss.Style
-	selectMark lipgloss.Style
+	input        lipgloss.Style
+	tabs         lipgloss.Style
+	modeBar      lipgloss.Style
+	group        lipgloss.Style
+	row          lipgloss.Style
+	selected     lipgloss.Style
+	badge        lipgloss.Style
+	dim          lipgloss.Style
+	error        lipgloss.Style
+	viewerHeader lipgloss.Style
+	viewerBody   lipgloss.Style
+	selectMark   lipgloss.Style
 }
 
 func newAppStyles() appStyles {
@@ -22,6 +25,10 @@ func newAppStyles() appStyles {
 		tabs: lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(lipgloss.Color("110")),
+		modeBar: lipgloss.NewStyle().
+			Padding(0, 1).
+			Bold(true).
+			Foreground(lipgloss.Color("252")),
 		group: lipgloss.NewStyle().
 			Padding(1, 1, 0, 1).
 			Bold(true).
@@ -42,6 +49,13 @@ func newAppStyles() appStyles {
 		error: lipgloss.NewStyle().
 			Padding(1, 1, 0, 1).
 			Foreground(lipgloss.Color("203")),
+		viewerHeader: lipgloss.NewStyle().
+			Padding(0, 1).
+			Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("24")),
+		viewerBody: lipgloss.NewStyle().
+			Padding(0, 1),
 		selectMark: lipgloss.NewStyle().Bold(true),
 	}
 }
