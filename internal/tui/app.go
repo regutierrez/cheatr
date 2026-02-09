@@ -115,6 +115,29 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.focus == focusViewer {
+			switch typed.String() {
+			case "j":
+				m.vp.LineDown(1)
+				return m, nil
+			case "k":
+				m.vp.LineUp(1)
+				return m, nil
+			case "f":
+				m.vp.ViewDown()
+				return m, nil
+			case "b":
+				m.vp.ViewUp()
+				return m, nil
+			case "g":
+				m.vp.GotoTop()
+				return m, nil
+			case "G":
+				m.vp.GotoBottom()
+				return m, nil
+			}
+		}
+
 		switch typed.String() {
 		case "ctrl+c", "esc", "q":
 			return m, tea.Quit
