@@ -95,7 +95,11 @@ func (s *service) GetSection(res *Resolution) (string, error) {
 }
 
 func (s *service) Search(query string, filter SourceFilter) ([]SearchResult, error) {
-	return nil, notImplemented("Search")
+	if s.resolver == nil {
+		return nil, notImplemented("Search")
+	}
+
+	return s.resolver.Search(query, filter)
 }
 
 func (s *service) KnownLanguages() ([]string, error) {

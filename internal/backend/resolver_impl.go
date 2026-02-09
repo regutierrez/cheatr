@@ -166,7 +166,351 @@ func (r *routingResolver) ResolveDocs(slug, search string) (*Resolution, error) 
 }
 
 func (r *routingResolver) Search(query string, filter SourceFilter) ([]SearchResult, error) {
-	return nil, notImplemented("Search")
+	if r.sources == nil {
+		return nil, errors.New("source manager is required")
+	}
+
+	searchQuery := strings.TrimSpace(query)
+	sources, err := searchSourcesForFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	languageLike := r.queryLooksLanguageLike(searchQuery)
+	cliLike := r.queryLooksCLILike(searchQuery)
+
+	results := make([]SearchResult, 0, 256)
+	for _, source := range sources {
+		var sourceResults []SearchResult
+		switch source {
+		case SourceLXIYM, SourceDevhints, SourceTldr:
+			sourceResults, err = r.searchRepoSource(source, searchQuery, languageLike, cliLike)
+		case SourceDevDocs:
+			sourceResults, err = r.searchLocalDevDocs(searchQuery, languageLike, cliLike)
+		default:
+			err = fmt.Errorf("unsupported search source %q", source)
+		}
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, sourceResults...)
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		leftScore := results[i].Score + sourceRoutingBoost(results[i].Priority)
+		rightScore := results[j].Score + sourceRoutingBoost(results[j].Priority)
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		if results[i].Priority != results[j].Priority {
+			return results[i].Priority < results[j].Priority
+		}
+		leftTitle := ""
+		rightTitle := ""
+		if results[i].Entry != nil {
+			leftTitle = strings.ToLower(strings.TrimSpace(results[i].Entry.Title))
+		}
+		if results[j].Entry != nil {
+			rightTitle = strings.ToLower(strings.TrimSpace(results[j].Entry.Title))
+		}
+		if leftTitle != rightTitle {
+			return leftTitle < rightTitle
+		}
+		return strings.ToLower(results[i].Source) < strings.ToLower(results[j].Source)
+	})
+
+	return results, nil
+}
+
+func searchSourcesForFilter(filter SourceFilter) ([]string, error) {
+	switch filter {
+	case FilterNone:
+		return []string{SourceLXIYM, SourceDevhints, SourceTldr, SourceDevDocs}, nil
+	case FilterLXIYM:
+		return []string{SourceLXIYM}, nil
+	case FilterDevhints:
+		return []string{SourceDevhints}, nil
+	case FilterTldr:
+		return []string{SourceTldr}, nil
+	case FilterDevDocs:
+		return []string{SourceDevDocs}, nil
+	default:
+		return nil, fmt.Errorf("unsupported source filter %q", filter)
+	}
+}
+
+func (r *routingResolver) searchRepoSource(source, query string, languageLike, cliLike bool) ([]SearchResult, error) {
+	repoPath, err := r.sources.RepoPath(source)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := loadEntriesBySource(r.loadCtx, source, repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	priority := routingPriorityForSource(source, languageLike, cliLike)
+	results := make([]SearchResult, 0, len(entries))
+	for _, entry := range entries {
+		score := scoreEntryMatch(query, entry, "", "")
+		if strings.TrimSpace(query) != "" && score <= 0 {
+			continue
+		}
+
+		results = append(results, SearchResult{
+			Kind:     SearchEntry,
+			Entry:    entry,
+			Source:   source,
+			Action:   ActionNone,
+			Score:    score,
+			Priority: priority,
+		})
+	}
+
+	return results, nil
+}
+
+func (r *routingResolver) searchLocalDevDocs(query string, languageLike, cliLike bool) ([]SearchResult, error) {
+	bundlesDir := filepath.Join(r.sources.dataDir, "devdocs", "bundles")
+	dirs, err := os.ReadDir(bundlesDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list local devdocs bundles: %w", err)
+	}
+
+	priority := routingPriorityForSource(SourceDevDocs, languageLike, cliLike)
+	results := make([]SearchResult, 0, 128)
+	for _, dir := range dirs {
+		if !dir.IsDir() {
+			continue
+		}
+
+		slug, err := normalizeDevDocSlug(dir.Name())
+		if err != nil {
+			continue
+		}
+
+		bundlePath := filepath.Join(bundlesDir, slug)
+		indexEntries, err := loadDevDocsIndexEntries(bundlePath)
+		if err != nil {
+			continue
+		}
+
+		for _, indexEntry := range indexEntries {
+			entryPath := strings.TrimSpace(indexEntry.path())
+			if entryPath == "" {
+				continue
+			}
+
+			title := strings.TrimSpace(indexEntry.Name)
+			if title == "" {
+				title = strings.Trim(entryPath, "/")
+			}
+
+			entry := &parsers.Entry{
+				ID:       fmt.Sprintf("%s:%s:%s", SourceDevDocs, slug, entryPath),
+				Source:   SourceDevDocs,
+				Topic:    slug,
+				Title:    title,
+				Category: parsers.CategoryAPI,
+			}
+
+			score := scoreEntryMatch(query, entry, slug, entryPath)
+			if strings.TrimSpace(query) != "" && score <= 0 {
+				continue
+			}
+
+			results = append(results, SearchResult{
+				Kind:     SearchEntry,
+				Entry:    entry,
+				Source:   SourceDevDocs,
+				Action:   ActionNone,
+				Meta:     map[string]string{"slug": slug, "path": entryPath},
+				Score:    score,
+				Priority: priority,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+func (r *routingResolver) queryLooksLanguageLike(query string) bool {
+	normalized := normalizeTopic(query)
+	if normalized == "" {
+		return false
+	}
+
+	if strings.Contains(normalized, " ") {
+		parts := strings.Fields(normalized)
+		if len(parts) == 0 {
+			return false
+		}
+		normalized = parts[0]
+	}
+
+	return r.IsLanguage(normalized)
+}
+
+func (r *routingResolver) queryLooksCLILike(query string) bool {
+	normalized := normalizeTopic(query)
+	if normalized == "" {
+		return false
+	}
+
+	if strings.ContainsAny(normalized, "|><") {
+		return true
+	}
+
+	if strings.Contains(normalized, "--") || strings.Contains(normalized, " -") {
+		return true
+	}
+
+	parts := strings.Fields(normalized)
+	if len(parts) == 0 {
+		return false
+	}
+
+	if r.HasTldrEntry(parts[0]) {
+		return true
+	}
+
+	if len(parts) > 1 && !r.IsLanguage(parts[0]) {
+		return true
+	}
+
+	return false
+}
+
+func routingPriorityForSource(source string, languageLike, cliLike bool) int {
+	switch {
+	case languageLike:
+		switch source {
+		case SourceLXIYM:
+			return 0
+		case SourceDevhints:
+			return 1
+		case SourceDevDocs:
+			return 2
+		case SourceTldr:
+			return 3
+		}
+	case cliLike:
+		switch source {
+		case SourceTldr:
+			return 0
+		case SourceDevhints:
+			return 1
+		case SourceLXIYM:
+			return 2
+		case SourceDevDocs:
+			return 3
+		}
+	default:
+		switch source {
+		case SourceDevhints:
+			return 0
+		case SourceTldr:
+			return 1
+		case SourceLXIYM:
+			return 2
+		case SourceDevDocs:
+			return 3
+		}
+	}
+
+	return 4
+}
+
+func sourceRoutingBoost(priority int) int {
+	switch priority {
+	case 0:
+		return 36
+	case 1:
+		return 24
+	case 2:
+		return 12
+	default:
+		return 0
+	}
+}
+
+func scoreEntryMatch(query string, entry *parsers.Entry, extraTerms ...string) int {
+	needle := normalizeLooseKey(query)
+	if needle == "" {
+		return 1
+	}
+
+	terms := make([]string, 0, len(entry.Tags)+6+len(extraTerms))
+	terms = append(terms, entry.Title, entry.Topic, entry.ID, entry.Category)
+	terms = append(terms, entry.Tags...)
+	terms = append(terms, extraTerms...)
+
+	best := 0
+	for _, term := range terms {
+		candidate := normalizeLooseKey(term)
+		if candidate == "" {
+			continue
+		}
+		score := scoreLooseMatch(needle, candidate)
+		if score > best {
+			best = score
+		}
+	}
+
+	return best
+}
+
+func scoreLooseMatch(needle, candidate string) int {
+	if needle == "" || candidate == "" {
+		return 0
+	}
+
+	if needle == candidate {
+		return 220
+	}
+
+	if strings.HasPrefix(candidate, needle) {
+		return 180 - minInt(30, len(candidate)-len(needle))
+	}
+
+	if idx := strings.Index(candidate, needle); idx >= 0 {
+		return 140 - minInt(40, idx)
+	}
+
+	if !isSubsequence(needle, candidate) {
+		return 0
+	}
+
+	return 70 - minInt(30, len(candidate)-len(needle))
+}
+
+func isSubsequence(needle, candidate string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+
+	idx := 0
+	for i := 0; i < len(candidate) && idx < len(needle); i++ {
+		if candidate[i] == needle[idx] {
+			idx++
+		}
+	}
+
+	return idx == len(needle)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (r *routingResolver) IsLanguage(name string) bool {
