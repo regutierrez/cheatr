@@ -15,6 +15,9 @@ type appStyles struct {
 	viewerHeader lipgloss.Style
 	viewerBody   lipgloss.Style
 	selectMark   lipgloss.Style
+	helpOverlay  lipgloss.Style
+	helpTitle    lipgloss.Style
+	helpBody     lipgloss.Style
 }
 
 func newAppStyles() appStyles {
@@ -57,5 +60,16 @@ func newAppStyles() appStyles {
 		viewerBody: lipgloss.NewStyle().
 			Padding(0, 1),
 		selectMark: lipgloss.NewStyle().Bold(true),
+		helpOverlay: lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("81")).
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("235")),
+		helpTitle: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("230")),
+		helpBody: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")),
 	}
 }

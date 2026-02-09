@@ -25,6 +25,7 @@ type interactiveModel struct {
 	input       textinput.Model
 	search      searchModel
 	focus       interactiveFocusMode
+	showHelp    bool
 	results     []backend.SearchResult
 	err         error
 	selected    int
@@ -115,6 +116,23 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if typed.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+
+		if m.showHelp {
+			switch typed.String() {
+			case "?", "esc", "q":
+				m.showHelp = false
+			}
+			return m, nil
+		}
+
+		if typed.String() == "?" {
+			m.showHelp = true
+			return m, nil
+		}
+
 		if m.focus == focusViewer {
 			switch typed.String() {
 			case "j":
@@ -139,7 +157,7 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch typed.String() {
-		case "ctrl+c", "esc", "q":
+		case "esc", "q":
 			return m, tea.Quit
 		case "enter":
 			if m.focus == focusViewer {
@@ -229,33 +247,67 @@ func (m interactiveModel) searchCmd() tea.Cmd {
 }
 
 func (m interactiveModel) View() string {
+	baseView := ""
 	if m.focus == focusViewer {
-		return m.renderViewerView()
-	}
-
-	parts := []string{
-		m.styles.modeBar.Render(fmt.Sprintf("cheatr [%s]", m.focus)),
-		m.styles.input.Render(m.input.View()),
-		m.styles.tabs.Render(m.search.renderSourceTabs()),
-	}
-
-	if m.err != nil {
-		parts = append(parts, m.styles.error.Render(fmt.Sprintf("Search failed: %v", m.err)))
-		return strings.Join(parts, "\n")
-	}
-
-	rows := m.search.renderResults(m.results, m.selected, m.styles)
-	if len(rows) == 0 {
-		if m.isSearching {
-			parts = append(parts, m.styles.dim.Render("Searching..."))
-		} else {
-			parts = append(parts, m.styles.dim.Render("No results."))
+		baseView = m.renderViewerView()
+	} else {
+		parts := []string{
+			m.styles.modeBar.Render(fmt.Sprintf("cheatr [%s]", m.focus)),
+			m.styles.input.Render(m.input.View()),
+			m.styles.tabs.Render(m.search.renderSourceTabs()),
 		}
-		return strings.Join(parts, "\n")
+
+		if m.err != nil {
+			parts = append(parts, m.styles.error.Render(fmt.Sprintf("Search failed: %v", m.err)))
+			baseView = strings.Join(parts, "\n")
+		} else {
+			rows := m.search.renderResults(m.results, m.selected, m.styles)
+			if len(rows) == 0 {
+				if m.isSearching {
+					parts = append(parts, m.styles.dim.Render("Searching..."))
+				} else {
+					parts = append(parts, m.styles.dim.Render("No results."))
+				}
+				baseView = strings.Join(parts, "\n")
+			} else {
+				parts = append(parts, strings.Join(rows, "\n"))
+				baseView = strings.Join(parts, "\n")
+			}
+		}
 	}
 
-	parts = append(parts, strings.Join(rows, "\n"))
-	return strings.Join(parts, "\n")
+	if m.showHelp {
+		return m.renderWithHelpOverlay(baseView)
+	}
+	return baseView
+}
+
+func (m interactiveModel) renderWithHelpOverlay(baseView string) string {
+	overlayBody := []string{
+		m.styles.helpTitle.Render("Keyboard Help"),
+		m.styles.helpBody.Render("/ focus search    tab cycle source    backspace previous tab/screen"),
+		m.styles.helpBody.Render("j/k or up/down move    enter open selection"),
+		m.styles.helpBody.Render("viewer: j/k scroll    f/b page    g/G top/bottom"),
+		m.styles.helpBody.Render("close help: ? or Esc or q"),
+	}
+	overlay := m.styles.helpOverlay.Render(strings.Join(overlayBody, "\n"))
+
+	if m.width > 0 && m.height > 0 {
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			overlay,
+			lipgloss.WithWhitespaceChars(" "),
+			lipgloss.WithWhitespaceForeground(lipgloss.Color("238")),
+		)
+	}
+
+	if strings.TrimSpace(baseView) == "" {
+		return overlay
+	}
+	return baseView + "\n\n" + overlay
 }
 
 func maxInt(a, b int) int {
