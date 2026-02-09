@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +18,15 @@ import (
 )
 
 const devDocsCatalogURL = "https://devdocs.io/docs.json"
+
+const devDocsDocumentsBaseURL = "https://documents.devdocs.io"
+
+const (
+	devDocsCatalogFile = "docs.json"
+	devDocsIndexFile   = "index.json"
+	devDocsDBFile      = "db.json"
+	devDocsStateFile   = "enabled.json"
+)
 
 type gitSource struct {
 	Name string
@@ -31,6 +43,10 @@ var defaultGitSources = []gitSource{
 type DevDoc struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`
+}
+
+type devDocsState struct {
+	Enabled []string `json:"enabled"`
 }
 
 type SourceManager struct {
@@ -110,6 +126,133 @@ func (m *SourceManager) RepoPath(name string) (string, error) {
 
 func (m *SourceManager) DevDocsCatalogPath() string {
 	return m.devDocsCatalogPath()
+}
+
+func (m *SourceManager) EnableDevDoc(slug string) error {
+	normalized, err := normalizeDevDocSlug(slug)
+	if err != nil {
+		return err
+	}
+
+	if err := m.ensureDevDocKnown(normalized); err != nil {
+		return err
+	}
+
+	state, err := m.readDevDocsState()
+	if err != nil {
+		return err
+	}
+
+	if slices.Contains(state.Enabled, normalized) {
+		return nil
+	}
+
+	state.Enabled = append(state.Enabled, normalized)
+	return m.writeDevDocsState(state)
+}
+
+func (m *SourceManager) DisableDevDoc(slug string) error {
+	normalized, err := normalizeDevDocSlug(slug)
+	if err != nil {
+		return err
+	}
+
+	state, err := m.readDevDocsState()
+	if err != nil {
+		return err
+	}
+
+	next := make([]string, 0, len(state.Enabled))
+	for _, enabled := range state.Enabled {
+		if enabled != normalized {
+			next = append(next, enabled)
+		}
+	}
+	state.Enabled = next
+
+	return m.writeDevDocsState(state)
+}
+
+func (m *SourceManager) ListEnabledDevDocs() ([]string, error) {
+	state, err := m.readDevDocsState()
+	if err != nil {
+		return nil, err
+	}
+
+	enabled := append([]string(nil), state.Enabled...)
+	sort.Strings(enabled)
+	return enabled, nil
+}
+
+func (m *SourceManager) EnsureDevDocBundle(slug string) (string, error) {
+	normalized, err := normalizeDevDocSlug(slug)
+	if err != nil {
+		return "", err
+	}
+
+	if err := m.ensureDevDocKnown(normalized); err != nil {
+		return "", err
+	}
+
+	bundlePath := m.devDocsBundlePath(normalized)
+	if err := os.MkdirAll(bundlePath, 0o755); err != nil {
+		return "", fmt.Errorf("create devdocs bundle dir: %w", err)
+	}
+
+	indexPath := filepath.Join(bundlePath, devDocsIndexFile)
+	if _, err := os.Stat(indexPath); errors.Is(err, os.ErrNotExist) {
+		if err := m.downloadDevDocBundleFile(normalized, devDocsIndexFile, indexPath); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("stat devdocs index bundle: %w", err)
+	}
+
+	dbPath := filepath.Join(bundlePath, devDocsDBFile)
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		if err := m.downloadDevDocBundleFile(normalized, devDocsDBFile, dbPath); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("stat devdocs db bundle: %w", err)
+	}
+
+	return bundlePath, nil
+}
+
+func (m *SourceManager) DevDocBundlePath(slug string) (string, error) {
+	normalized, err := normalizeDevDocSlug(slug)
+	if err != nil {
+		return "", err
+	}
+
+	return m.devDocsBundlePath(normalized), nil
+}
+
+func (m *SourceManager) HasDevDocBundle(slug string) (bool, error) {
+	normalized, err := normalizeDevDocSlug(slug)
+	if err != nil {
+		return false, err
+	}
+
+	bundlePath := m.devDocsBundlePath(normalized)
+	indexPath := filepath.Join(bundlePath, devDocsIndexFile)
+	if _, err := os.Stat(indexPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat devdocs index bundle: %w", err)
+	}
+
+	dbPath := filepath.Join(bundlePath, devDocsDBFile)
+	if _, err := os.Stat(dbPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat devdocs db bundle: %w", err)
+	}
+
+	return true, nil
 }
 
 func (m *SourceManager) updateAll() error {
@@ -192,7 +335,149 @@ func (m *SourceManager) fetchDevDocsCatalog() error {
 }
 
 func (m *SourceManager) devDocsCatalogPath() string {
-	return filepath.Join(m.dataDir, "devdocs", "docs.json")
+	return filepath.Join(m.dataDir, "devdocs", devDocsCatalogFile)
+}
+
+func (m *SourceManager) devDocsStatePath() string {
+	return filepath.Join(m.dataDir, "devdocs", devDocsStateFile)
+}
+
+func (m *SourceManager) devDocsBundlePath(slug string) string {
+	return filepath.Join(m.dataDir, "devdocs", "bundles", slug)
+}
+
+func (m *SourceManager) ensureDevDocKnown(slug string) error {
+	docs, err := m.ListDevDocs()
+	if err != nil {
+		return fmt.Errorf("load devdocs catalog: %w", err)
+	}
+
+	for _, doc := range docs {
+		if strings.EqualFold(strings.TrimSpace(doc.Slug), slug) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unknown devdocs slug %q", slug)
+}
+
+func (m *SourceManager) readDevDocsState() (devDocsState, error) {
+	path := m.devDocsStatePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return devDocsState{}, nil
+		}
+		return devDocsState{}, fmt.Errorf("read devdocs state: %w", err)
+	}
+
+	var state devDocsState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return devDocsState{}, fmt.Errorf("decode devdocs state: %w", err)
+	}
+
+	normalized := make([]string, 0, len(state.Enabled))
+	for _, slug := range state.Enabled {
+		clean, err := normalizeDevDocSlug(slug)
+		if err != nil {
+			continue
+		}
+		if slices.Contains(normalized, clean) {
+			continue
+		}
+		normalized = append(normalized, clean)
+	}
+	sort.Strings(normalized)
+	state.Enabled = normalized
+
+	return state, nil
+}
+
+func (m *SourceManager) writeDevDocsState(state devDocsState) error {
+	if err := os.MkdirAll(filepath.Dir(m.devDocsStatePath()), 0o755); err != nil {
+		return fmt.Errorf("create devdocs state dir: %w", err)
+	}
+
+	state.Enabled = append([]string(nil), state.Enabled...)
+	sort.Strings(state.Enabled)
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode devdocs state: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.WriteFile(m.devDocsStatePath(), data, 0o644); err != nil {
+		return fmt.Errorf("write devdocs state: %w", err)
+	}
+
+	return nil
+}
+
+func (m *SourceManager) downloadDevDocBundleFile(slug, fileName, destination string) error {
+	fileURL, err := url.JoinPath(devDocsDocumentsBaseURL, slug, fileName)
+	if err != nil {
+		return fmt.Errorf("build devdocs bundle url: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fileURL, nil)
+	if err != nil {
+		return fmt.Errorf("create devdocs bundle request: %w", err)
+	}
+
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch devdocs bundle %q: %w", fileName, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch devdocs bundle %q: status %s", fileName, resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read devdocs bundle %q response: %w", fileName, err)
+	}
+
+	if !json.Valid(body) {
+		return fmt.Errorf("fetch devdocs bundle %q: invalid json", fileName)
+	}
+
+	tmpPath := destination + ".tmp"
+	if err := os.WriteFile(tmpPath, body, 0o644); err != nil {
+		return fmt.Errorf("write temp devdocs bundle %q: %w", fileName, err)
+	}
+
+	if err := os.Rename(tmpPath, destination); err != nil {
+		return fmt.Errorf("finalize devdocs bundle %q: %w", fileName, err)
+	}
+
+	return nil
+}
+
+func normalizeDevDocSlug(slug string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(slug))
+	if normalized == "" {
+		return "", errors.New("devdocs slug is required")
+	}
+
+	if strings.Contains(normalized, "/") || strings.Contains(normalized, "\\") || strings.Contains(normalized, "..") {
+		return "", fmt.Errorf("invalid devdocs slug %q", slug)
+	}
+
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '-', '_', '.', '~':
+		default:
+			return "", fmt.Errorf("invalid devdocs slug %q", slug)
+		}
+	}
+
+	return normalized, nil
 }
 
 func resolveDataDir(dataDir string) (string, error) {

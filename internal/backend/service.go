@@ -54,11 +54,11 @@ func (s *service) ListDevDocs() ([]DevDoc, error) {
 }
 
 func (s *service) EnableDevDoc(slug string) error {
-	return notImplemented("EnableDevDoc")
+	return s.sources.EnableDevDoc(slug)
 }
 
 func (s *service) DisableDevDoc(slug string) error {
-	return notImplemented("DisableDevDoc")
+	return s.sources.DisableDevDoc(slug)
 }
 
 func notImplemented(method string) error {

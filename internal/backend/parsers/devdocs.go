@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown"
 )
 
 const (
@@ -79,6 +81,11 @@ func ParseDevDocsCandidate(_ context.Context, candidate Candidate, _ ParseOption
 		return nil, ErrSkipCandidate
 	}
 
+	markdown, err := ConvertDevDocsHTMLToMarkdown(payload)
+	if err != nil {
+		return nil, fmt.Errorf("convert devdocs html to markdown: %w", err)
+	}
+
 	topic := strings.TrimSpace(candidate.Topic)
 	if topic == "" {
 		topic = normalizeDevDocsTopic(candidate.ID)
@@ -90,9 +97,20 @@ func ParseDevDocsCandidate(_ context.Context, candidate Candidate, _ ParseOption
 		Topic:    topic,
 		Title:    topic,
 		Tags:     []string{topic},
-		Content:  payload,
+		Content:  markdown,
 		Category: CategoryAPI,
 	}, nil
+}
+
+func ConvertDevDocsHTMLToMarkdown(html string) (string, error) {
+	converter := htmltomarkdown.NewConverter("", true, nil)
+
+	markdown, err := converter.ConvertString(html)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(markdown), nil
 }
 
 func readDevDocsDB(root string) (map[string]string, error) {
