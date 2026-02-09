@@ -44,7 +44,7 @@ func LoadDevhintsEntries(ctx context.Context, repoRoot string) ([]*Entry, error)
 }
 
 func ParseDevhintsCandidate(_ context.Context, candidate Candidate, _ ParseOptions) (*Entry, error) {
-	body, err := readCandidateFile(candidate)
+	raw, err := readCandidateFile(candidate)
 	if err != nil {
 		return nil, fmt.Errorf("read devhints file: %w", err)
 	}
@@ -54,13 +54,30 @@ func ParseDevhintsCandidate(_ context.Context, candidate Candidate, _ ParseOptio
 		topic = strings.TrimSuffix(filepath.Base(candidate.Path), filepath.Ext(candidate.Path))
 	}
 
+	meta, body, err := parseYAMLFrontmatter(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse devhints frontmatter: %w", err)
+	}
+
+	title := topic
+	if v := firstMetaString(meta, "title", "name"); v != "" {
+		title = v
+	}
+
+	tags := []string{topic}
+	tags = append(tags, metaStringList(meta, "tags", "tag", "keywords")...)
+	tags = dedupeStrings(tags)
+
+	sections := parseLevel3Sections(body)
+
 	return &Entry{
 		ID:       entryID(SourceDevhints, topic, candidate.ID),
 		Source:   SourceDevhints,
 		Topic:    topic,
-		Title:    topic,
-		Tags:     []string{topic},
+		Title:    title,
+		Tags:     tags,
 		Content:  body,
 		Category: CategoryCheatsheet,
+		Sections: sections,
 	}, nil
 }
