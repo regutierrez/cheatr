@@ -159,6 +159,11 @@ func (m interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "esc", "q":
 			return m, tea.Quit
+		case "/":
+			if m.focus != focusSearch {
+				m.setFocus(focusSearch)
+			}
+			return m, nil
 		case "enter":
 			if m.focus == focusViewer {
 				return m, nil
