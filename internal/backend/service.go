@@ -49,6 +49,14 @@ func (s *service) Search(query string, filter SourceFilter) ([]SearchResult, err
 	return nil, notImplemented("Search")
 }
 
+func (s *service) KnownLanguages() ([]string, error) {
+	return s.sources.KnownLanguages()
+}
+
+func (s *service) IsLanguage(name string) bool {
+	return s.sources.IsLanguage(name)
+}
+
 func (s *service) ListDevDocs() ([]DevDoc, error) {
 	return s.sources.ListDevDocs()
 }

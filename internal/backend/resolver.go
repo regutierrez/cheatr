@@ -59,6 +59,11 @@ const (
 	FilterDevDocs  SourceFilter = SourceDevDocs
 )
 
+type LanguageDetector interface {
+	KnownLanguages() ([]string, error)
+	IsLanguage(name string) bool
+}
+
 type Resolver interface {
 	Resolve(args []string) (*Resolution, error)
 	ResolveSubtopic(lang, subtopic string) (*Resolution, error)

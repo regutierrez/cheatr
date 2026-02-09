@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -26,6 +27,7 @@ const (
 	devDocsIndexFile   = "index.json"
 	devDocsDBFile      = "db.json"
 	devDocsStateFile   = "enabled.json"
+	languageCacheFile  = "languages.json"
 )
 
 type gitSource struct {
@@ -53,6 +55,11 @@ type SourceManager struct {
 	dataDir    string
 	httpClient *http.Client
 	gitSources map[string]gitSource
+
+	languagesMu     sync.RWMutex
+	languages       []string
+	languageSet     map[string]struct{}
+	languagesLoaded bool
 }
 
 func NewSourceManager(dataDir string) (*SourceManager, error) {
@@ -98,7 +105,76 @@ func (m *SourceManager) UpdateSource(name string) error {
 		return fmt.Errorf("unknown source %q", name)
 	}
 
-	return m.cloneOrPull(src)
+	if err := m.cloneOrPull(src); err != nil {
+		return err
+	}
+
+	if normalized == SourceLXIYM {
+		m.invalidateLanguageCache()
+	}
+
+	return nil
+}
+
+func (m *SourceManager) KnownLanguages() ([]string, error) {
+	m.languagesMu.RLock()
+	if m.languagesLoaded {
+		cached := append([]string(nil), m.languages...)
+		m.languagesMu.RUnlock()
+		return cached, nil
+	}
+	m.languagesMu.RUnlock()
+
+	m.languagesMu.Lock()
+	defer m.languagesMu.Unlock()
+
+	if m.languagesLoaded {
+		return append([]string(nil), m.languages...), nil
+	}
+
+	if err := m.loadLanguageCacheFromDisk(); err == nil && m.languagesLoaded {
+		return append([]string(nil), m.languages...), nil
+	}
+
+	repoPath, err := m.RepoPath(SourceLXIYM)
+	if err != nil {
+		return nil, err
+	}
+
+	languages, err := deriveLanguagesFromFilenames(repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	m.languages = languages
+	m.languageSet = make(map[string]struct{}, len(languages))
+	for _, language := range languages {
+		m.languageSet[language] = struct{}{}
+	}
+	m.languagesLoaded = true
+
+	if err := m.writeLanguageCacheToDisk(); err != nil {
+		return nil, err
+	}
+
+	return append([]string(nil), m.languages...), nil
+}
+
+func (m *SourceManager) IsLanguage(name string) bool {
+	normalized := normalizeLanguageName(name)
+	if normalized == "" {
+		return false
+	}
+
+	if _, err := m.KnownLanguages(); err != nil {
+		return false
+	}
+
+	m.languagesMu.RLock()
+	_, ok := m.languageSet[normalized]
+	m.languagesMu.RUnlock()
+
+	return ok
 }
 
 func (m *SourceManager) ListDevDocs() ([]DevDoc, error) {
@@ -261,6 +337,7 @@ func (m *SourceManager) updateAll() error {
 			return err
 		}
 	}
+	m.invalidateLanguageCache()
 
 	return m.fetchDevDocsCatalog()
 }
@@ -344,6 +421,68 @@ func (m *SourceManager) devDocsStatePath() string {
 
 func (m *SourceManager) devDocsBundlePath(slug string) string {
 	return filepath.Join(m.dataDir, "devdocs", "bundles", slug)
+}
+
+func (m *SourceManager) languageCachePath() string {
+	return filepath.Join(m.dataDir, "cache", languageCacheFile)
+}
+
+func (m *SourceManager) loadLanguageCacheFromDisk() error {
+	data, err := os.ReadFile(m.languageCachePath())
+	if err != nil {
+		return err
+	}
+
+	var payload struct {
+		Languages []string `json:"languages"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+
+	languages := dedupeAndSortLanguages(payload.Languages)
+	m.languages = languages
+	m.languageSet = make(map[string]struct{}, len(languages))
+	for _, language := range languages {
+		m.languageSet[language] = struct{}{}
+	}
+	m.languagesLoaded = true
+
+	return nil
+}
+
+func (m *SourceManager) writeLanguageCacheToDisk() error {
+	if err := os.MkdirAll(filepath.Dir(m.languageCachePath()), 0o755); err != nil {
+		return fmt.Errorf("create language cache dir: %w", err)
+	}
+
+	payload := struct {
+		Languages []string `json:"languages"`
+	}{
+		Languages: append([]string(nil), m.languages...),
+	}
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode language cache: %w", err)
+	}
+	data = append(data, '\n')
+
+	if err := os.WriteFile(m.languageCachePath(), data, 0o644); err != nil {
+		return fmt.Errorf("write language cache: %w", err)
+	}
+
+	return nil
+}
+
+func (m *SourceManager) invalidateLanguageCache() {
+	m.languagesMu.Lock()
+	m.languages = nil
+	m.languageSet = nil
+	m.languagesLoaded = false
+	m.languagesMu.Unlock()
+
+	_ = os.Remove(m.languageCachePath())
 }
 
 func (m *SourceManager) ensureDevDocKnown(slug string) error {
