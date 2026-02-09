@@ -40,6 +40,14 @@ func (r *routingResolver) Resolve(args []string) (*Resolution, error) {
 		return nil, errors.New("topic is required")
 	}
 
+	if topic == "docs" {
+		if len(args) < 2 {
+			return nil, errors.New("docs slug is required")
+		}
+
+		return r.ResolveDocs(args[1], strings.Join(args[2:], " "))
+	}
+
 	if len(args) > 1 {
 		if r.IsLanguage(topic) {
 			return r.ResolveSubtopic(topic, strings.Join(args[1:], " "))
@@ -91,7 +99,70 @@ func (r *routingResolver) ResolveSubtopic(lang, subtopic string) (*Resolution, e
 }
 
 func (r *routingResolver) ResolveDocs(slug, search string) (*Resolution, error) {
-	return nil, notImplemented("ResolveDocs")
+	if r.sources == nil {
+		return nil, errors.New("source manager is required")
+	}
+
+	normalizedSlug, err := normalizeDevDocSlug(slug)
+	if err != nil {
+		return nil, err
+	}
+
+	bundlePath, err := r.sources.EnsureDevDocBundle(normalizedSlug)
+	if err != nil {
+		return nil, err
+	}
+
+	indexEntries, err := loadDevDocsIndexEntries(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+
+	trimmedSearch := strings.TrimSpace(search)
+	if trimmedSearch == "" {
+		return &Resolution{
+			Source:     SourceDevDocs,
+			Topic:      normalizedSlug,
+			Candidates: collectDevDocsBrowseCandidates(indexEntries),
+		}, nil
+	}
+
+	if exact := findDevDocsExactMatch(indexEntries, trimmedSearch); exact != nil {
+		content, err := loadDevDocsPageContent(bundlePath, exact.path())
+		if err != nil {
+			return nil, err
+		}
+
+		return &Resolution{
+			Source:   SourceDevDocs,
+			Topic:    normalizedSlug,
+			Subtopic: trimmedSearch,
+			Content:  content,
+		}, nil
+	}
+
+	candidates := collectDevDocsRelatedCandidates(indexEntries, trimmedSearch)
+	if len(candidates) == 0 {
+		return &Resolution{
+			Source:   SourceDevDocs,
+			Topic:    normalizedSlug,
+			Subtopic: trimmedSearch,
+			Content: fmt.Sprintf(
+				"No results for '%s' in %s docs.\nTry: cheatr %s %s",
+				trimmedSearch,
+				normalizedSlug,
+				normalizedSlug,
+				trimmedSearch,
+			),
+		}, nil
+	}
+
+	return &Resolution{
+		Source:     SourceDevDocs,
+		Topic:      normalizedSlug,
+		Subtopic:   trimmedSearch,
+		Candidates: candidates,
+	}, nil
 }
 
 func (r *routingResolver) Search(query string, filter SourceFilter) ([]SearchResult, error) {
@@ -520,6 +591,32 @@ func collectDevDocsRelatedCandidates(entries []devDocsIndexEntry, subtopic strin
 	}
 
 	return result
+}
+
+func collectDevDocsBrowseCandidates(entries []devDocsIndexEntry) []Candidate {
+	candidates := make([]Candidate, 0, len(entries))
+	for _, entry := range entries {
+		entryPath := strings.TrimSpace(entry.path())
+		if entryPath == "" {
+			continue
+		}
+
+		title := strings.TrimSpace(entry.Name)
+		if title == "" {
+			title = strings.Trim(entryPath, "/")
+		}
+
+		candidates = append(candidates, Candidate{Title: title, Path: entryPath})
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Title != candidates[j].Title {
+			return candidates[i].Title < candidates[j].Title
+		}
+		return candidates[i].Path < candidates[j].Path
+	})
+
+	return candidates
 }
 
 func loadDevDocsPageContent(bundlePath, entryPath string) (string, error) {

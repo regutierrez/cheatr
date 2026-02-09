@@ -61,14 +61,31 @@ func runDocsCommand(args []string) {
 		return
 	}
 
-	slug := args[0]
-	if len(args) == 1 {
-		fmt.Printf("docs command: browse '%s' docs (placeholder)\n", slug)
+	b, err := backend.New("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize backend: %v\n", err)
+		os.Exit(1)
+	}
+
+	res, err := b.Resolve(append([]string{"docs"}, args...))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "docs resolve failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(res.Content) != "" {
+		fmt.Println(res.Content)
 		return
 	}
 
-	search := strings.Join(args[1:], " ")
-	fmt.Printf("docs command: search '%s' in '%s' docs (placeholder)\n", search, slug)
+	if len(res.Candidates) == 0 {
+		fmt.Println("No matching docs entries.")
+		return
+	}
+
+	for _, candidate := range res.Candidates {
+		fmt.Printf("- %s (%s)\n", candidate.Title, candidate.Path)
+	}
 }
 
 func runDirectMode(args []string) {
