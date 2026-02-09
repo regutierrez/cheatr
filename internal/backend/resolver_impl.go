@@ -236,7 +236,7 @@ func (r *routingResolver) localDevDocsBrowseAction(query string, filter SourceFi
 		return SearchResult{}, false, nil
 	}
 
-	queryKey := normalizeDevDocsInjectKey(query)
+	queryKey := normalizeResolverAlias(query)
 	if queryKey == "" {
 		return SearchResult{}, false, nil
 	}
@@ -252,8 +252,7 @@ func (r *routingResolver) localDevDocsBrowseAction(query string, filter SourceFi
 
 	lookup := make(map[string]string, len(localSlugs))
 	for _, slug := range localSlugs {
-		lookup[slug] = slug
-		lookup[normalizeDevDocsInjectKey(slug)] = slug
+		lookup[normalizeResolverAlias(slug)] = slug
 	}
 
 	matchedSlug, ok := lookup[queryKey]
@@ -297,27 +296,6 @@ func (r *routingResolver) localDevDocsBundleSlugs() ([]string, error) {
 	return slugs, nil
 }
 
-func normalizeDevDocsInjectKey(value string) string {
-	value = normalizeTopic(value)
-	if value == "" {
-		return ""
-	}
-
-	var b strings.Builder
-	b.Grow(len(value))
-	for _, r := range value {
-		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r):
-			b.WriteRune(unicode.ToLower(r))
-		case r == ' ', r == '-', r == '_', r == '.':
-			continue
-		default:
-			b.WriteRune(unicode.ToLower(r))
-		}
-	}
-
-	return b.String()
-}
 func searchSourcesForFilter(filter SourceFilter) ([]string, error) {
 	switch filter {
 	case FilterNone:
