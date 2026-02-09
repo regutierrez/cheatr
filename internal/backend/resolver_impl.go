@@ -196,6 +196,12 @@ func (r *routingResolver) Search(query string, filter SourceFilter) ([]SearchRes
 		results = append(results, sourceResults...)
 	}
 
+	if action, ok, err := r.localDevDocsBrowseAction(searchQuery, filter); err != nil {
+		return nil, err
+	} else if ok {
+		results = append(results, action)
+	}
+
 	sort.SliceStable(results, func(i, j int) bool {
 		leftScore := results[i].Score + sourceRoutingBoost(results[i].Priority)
 		rightScore := results[j].Score + sourceRoutingBoost(results[j].Priority)
@@ -225,6 +231,93 @@ func (r *routingResolver) Search(query string, filter SourceFilter) ([]SearchRes
 	return results, nil
 }
 
+func (r *routingResolver) localDevDocsBrowseAction(query string, filter SourceFilter) (SearchResult, bool, error) {
+	if filter != FilterNone && filter != FilterDevDocs {
+		return SearchResult{}, false, nil
+	}
+
+	queryKey := normalizeDevDocsInjectKey(query)
+	if queryKey == "" {
+		return SearchResult{}, false, nil
+	}
+
+	localSlugs, err := r.localDevDocsBundleSlugs()
+	if err != nil {
+		return SearchResult{}, false, err
+	}
+
+	if len(localSlugs) == 0 {
+		return SearchResult{}, false, nil
+	}
+
+	lookup := make(map[string]string, len(localSlugs))
+	for _, slug := range localSlugs {
+		lookup[slug] = slug
+		lookup[normalizeDevDocsInjectKey(slug)] = slug
+	}
+
+	matchedSlug, ok := lookup[queryKey]
+	if !ok {
+		return SearchResult{}, false, nil
+	}
+
+	return SearchResult{
+		Kind:   SearchAction,
+		Label:  fmt.Sprintf("Browse %s docs (local)", matchedSlug),
+		Source: SourceDevDocs,
+		Action: ActionBrowseDevDocs,
+		Meta:   map[string]string{"slug": matchedSlug},
+	}, true, nil
+}
+
+func (r *routingResolver) localDevDocsBundleSlugs() ([]string, error) {
+	bundlesDir := filepath.Join(r.sources.dataDir, "devdocs", "bundles")
+	dirs, err := os.ReadDir(bundlesDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list local devdocs bundles: %w", err)
+	}
+
+	slugs := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if !dir.IsDir() {
+			continue
+		}
+
+		slug, err := normalizeDevDocSlug(dir.Name())
+		if err != nil {
+			continue
+		}
+
+		slugs = append(slugs, slug)
+	}
+
+	return slugs, nil
+}
+
+func normalizeDevDocsInjectKey(value string) string {
+	value = normalizeTopic(value)
+	if value == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			b.WriteRune(unicode.ToLower(r))
+		case r == ' ', r == '-', r == '_', r == '.':
+			continue
+		default:
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+
+	return b.String()
+}
 func searchSourcesForFilter(filter SourceFilter) ([]string, error) {
 	switch filter {
 	case FilterNone:
