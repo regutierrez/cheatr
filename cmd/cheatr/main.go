@@ -24,7 +24,16 @@ func main() {
 }
 
 func runInteractiveMode() {
-	fmt.Println("interactive mode (placeholder)")
+	b, err := backend.New("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize backend: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := tui.RunInteractive(b); err != nil {
+		fmt.Fprintf(os.Stderr, "interactive mode failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runUpdateCommand(args []string) {
