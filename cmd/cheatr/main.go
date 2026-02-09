@@ -2,6 +2,7 @@ package main
 
 import (
 	"cheatr/internal/backend"
+	"cheatr/internal/tui"
 	"fmt"
 	"os"
 	"strings"
@@ -61,20 +62,32 @@ func runDocsCommand(args []string) {
 		return
 	}
 
+	runResolvedArgs(append([]string{"docs"}, args...))
+}
+
+func runDirectMode(args []string) {
+	runResolvedArgs(args)
+}
+
+func runResolvedArgs(args []string) {
 	b, err := backend.New("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize backend: %v\n", err)
 		os.Exit(1)
 	}
 
-	res, err := b.Resolve(append([]string{"docs"}, args...))
+	res, err := b.Resolve(args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "docs resolve failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "resolve failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	if strings.TrimSpace(res.Content) != "" {
-		fmt.Println(res.Content)
+		query := strings.Join(args, " ")
+		if err := tui.RunPager(query, res.Source, res.Content); err != nil {
+			fmt.Fprintf(os.Stderr, "pager failed: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -86,8 +99,4 @@ func runDocsCommand(args []string) {
 	for _, candidate := range res.Candidates {
 		fmt.Printf("- %s (%s)\n", candidate.Title, candidate.Path)
 	}
-}
-
-func runDirectMode(args []string) {
-	fmt.Printf("direct mode: resolve '%s' (placeholder)\n", strings.Join(args, " "))
 }
