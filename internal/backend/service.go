@@ -157,7 +157,7 @@ func (s *service) entryFromResolution(res *Resolution) (*parsers.Entry, error) {
 			return nil, err
 		}
 
-		entries, err := loadEntriesBySource(context.Background(), source, repoPath)
+		entries, err := loadEntriesBySource(context.Background(), source, repoPath, s.sources.cache)
 		if err != nil {
 			return nil, err
 		}

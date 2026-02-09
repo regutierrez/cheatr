@@ -22,6 +22,8 @@ const devDocsCatalogURL = "https://devdocs.io/docs.json"
 
 const devDocsDocumentsBaseURL = "https://documents.devdocs.io"
 
+const devDocsBundleTTL = 24 * time.Hour
+
 const (
 	devDocsCatalogFile = "docs.json"
 	devDocsIndexFile   = "index.json"
@@ -55,6 +57,7 @@ type SourceManager struct {
 	dataDir    string
 	httpClient *http.Client
 	gitSources map[string]gitSource
+	cache      *CacheManager
 
 	languagesMu     sync.RWMutex
 	languages       []string
@@ -79,6 +82,7 @@ func NewSourceManager(dataDir string) (*SourceManager, error) {
 			Timeout: 30 * time.Second,
 		},
 		gitSources: gitSources,
+		cache:      NewCacheManager(resolved),
 	}, nil
 }
 
@@ -112,6 +116,7 @@ func (m *SourceManager) UpdateSource(name string) error {
 	if normalized == SourceLXIYM {
 		m.invalidateLanguageCache()
 	}
+	m.invalidateParsedEntryCache(normalized)
 
 	return nil
 }
@@ -276,21 +281,13 @@ func (m *SourceManager) EnsureDevDocBundle(slug string) (string, error) {
 	}
 
 	indexPath := filepath.Join(bundlePath, devDocsIndexFile)
-	if _, err := os.Stat(indexPath); errors.Is(err, os.ErrNotExist) {
-		if err := m.downloadDevDocBundleFile(normalized, devDocsIndexFile, indexPath); err != nil {
-			return "", err
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("stat devdocs index bundle: %w", err)
+	if err := m.ensureDevDocBundleFileFresh(normalized, devDocsIndexFile, indexPath); err != nil {
+		return "", err
 	}
 
 	dbPath := filepath.Join(bundlePath, devDocsDBFile)
-	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		if err := m.downloadDevDocBundleFile(normalized, devDocsDBFile, dbPath); err != nil {
-			return "", err
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("stat devdocs db bundle: %w", err)
+	if err := m.ensureDevDocBundleFileFresh(normalized, devDocsDBFile, dbPath); err != nil {
+		return "", err
 	}
 
 	return bundlePath, nil
@@ -336,6 +333,7 @@ func (m *SourceManager) updateAll() error {
 		if err := m.cloneOrPull(src); err != nil {
 			return err
 		}
+		m.invalidateParsedEntryCache(src.Name)
 	}
 	m.invalidateLanguageCache()
 
@@ -593,6 +591,34 @@ func (m *SourceManager) downloadDevDocBundleFile(slug, fileName, destination str
 	}
 
 	return nil
+}
+
+func (m *SourceManager) ensureDevDocBundleFileFresh(slug, fileName, destination string) error {
+	info, err := os.Stat(destination)
+	if errors.Is(err, os.ErrNotExist) {
+		return m.downloadDevDocBundleFile(slug, fileName, destination)
+	}
+	if err != nil {
+		return fmt.Errorf("stat devdocs bundle %q: %w", fileName, err)
+	}
+
+	if time.Since(info.ModTime()) <= devDocsBundleTTL {
+		return nil
+	}
+
+	return m.downloadDevDocBundleFile(slug, fileName, destination)
+}
+
+func (m *SourceManager) invalidateParsedEntryCache(source string) {
+	if !cacheableParsedEntrySource(source) {
+		return
+	}
+
+	if m.cache == nil {
+		return
+	}
+
+	_ = m.cache.InvalidateParsedEntries(source)
 }
 
 func normalizeDevDocSlug(slug string) (string, error) {

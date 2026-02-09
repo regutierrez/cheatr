@@ -388,7 +388,7 @@ func (r *routingResolver) searchRepoSource(source, query string, languageLike, c
 		return nil, err
 	}
 
-	entries, err := loadEntriesBySource(r.loadCtx, source, repoPath)
+	entries, err := loadEntriesBySource(r.loadCtx, source, repoPath, r.sources.cache)
 	if err != nil {
 		return nil, err
 	}
@@ -684,7 +684,7 @@ func (r *routingResolver) lookupEntry(source, topic string) (*parsers.Entry, err
 		return nil, err
 	}
 
-	entries, err := loadEntriesBySource(r.loadCtx, source, repoPath)
+	entries, err := loadEntriesBySource(r.loadCtx, source, repoPath, r.sources.cache)
 	if err != nil {
 		return nil, err
 	}
@@ -712,14 +712,35 @@ func (r *routingResolver) lookupEntry(source, topic string) (*parsers.Entry, err
 	return exactMatches[0], nil
 }
 
-func loadEntriesBySource(ctx context.Context, source, repoPath string) ([]*parsers.Entry, error) {
+func loadEntriesBySource(ctx context.Context, source, repoPath string, cache *CacheManager) ([]*parsers.Entry, error) {
+	if cache != nil {
+		if cachedEntries, hit, err := cache.LoadParsedEntries(source, repoPath); err == nil && hit {
+			return cachedEntries, nil
+		}
+	}
+
 	switch source {
 	case SourceLXIYM:
-		return parsers.LoadLXIYMEntries(ctx, repoPath)
+		entries, err := parsers.LoadLXIYMEntries(ctx, repoPath)
+		if err != nil {
+			return nil, err
+		}
+		_ = cache.SaveParsedEntries(source, repoPath, entries)
+		return entries, nil
 	case SourceDevhints:
-		return parsers.LoadDevhintsEntries(ctx, repoPath)
+		entries, err := parsers.LoadDevhintsEntries(ctx, repoPath)
+		if err != nil {
+			return nil, err
+		}
+		_ = cache.SaveParsedEntries(source, repoPath, entries)
+		return entries, nil
 	case SourceTldr:
-		return parsers.LoadTLDREntries(ctx, repoPath)
+		entries, err := parsers.LoadTLDREntries(ctx, repoPath)
+		if err != nil {
+			return nil, err
+		}
+		_ = cache.SaveParsedEntries(source, repoPath, entries)
+		return entries, nil
 	default:
 		return nil, fmt.Errorf("unsupported source %q", source)
 	}
@@ -755,7 +776,7 @@ func (r *routingResolver) resolveDevhintsSubtopic(lang, subtopic string) (*Resol
 		return nil, false, err
 	}
 
-	entries, err := loadEntriesBySource(r.loadCtx, SourceDevhints, repoPath)
+	entries, err := loadEntriesBySource(r.loadCtx, SourceDevhints, repoPath, r.sources.cache)
 	if err != nil {
 		return nil, false, err
 	}
