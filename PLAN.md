@@ -502,7 +502,7 @@ cheatr/
 
 Use this as the build checklist. Items are ordered by dependency.
 
-### MVP (v1)
+### MVP (v1) -- DONE
 
 1. **Scaffold project**: `go mod init`, create planned directories/files, wire `cmd/cheatr/main.go` mode dispatch.
 2. **Define core types and interfaces**: `Entry`, `Section`, `Resolution`, `Candidate`, `SearchResult` (`entry` + `action` kinds), `SourceFilter`, `Backend`, and `Resolver`.
@@ -531,6 +531,20 @@ Use this as the build checklist. Items are ordered by dependency.
 25. **Implement global help overlay**: toggle with `?` from any focus (including search input), close with `?`/`Esc`/`q`; no always-on key hint strip.
 26. **Implement exit/focus shortcuts**: `/` refocus search input; `Esc`/`q` quit interactive mode.
 27. **Implement cache layer**: parsed-entry cache, language list cache, invalidation on source updates, DevDocs bundle TTL handling.
+
+### BUGFIXES/IMPROVEMENTS
+- polish TUI. it's not good currently. draw it out probably?
+  - straighten out keyboard navigation. (/ for search text should be a thing. remap search text to other key maybe?)
+  - probably use learnxinyminutes primary resource. use devhints as fallback if nothing pops up in lxiym (claude-code, tmux cheatsheets, etc.)
+    need a better way to parse sections in learnxinyminutes if that's the case. or scroll into that part of the page already?
+  - add % label at bottom right
+- results must be paginated.
+- better fuzzy-finding-- strict enough that results closely follow search text, loose enough for uppercase/lowercase, list vs. lists
+  - probably add keywords also (for loops can be iterables. if statements can be conditionals. so on and so forth)
+- how to handle devdocs results since they're a lot.
+- for first time run, make sure to grab the docs we need. and only grab stuff that we need (english only, etc.)
+- add way to add personal cheatsheets.
+
 
 ### Future
 
